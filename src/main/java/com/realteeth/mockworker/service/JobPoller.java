@@ -1,0 +1,146 @@
+package com.realteeth.mockworker.service;
+
+import com.realteeth.mockworker.client.MockWorkerClient;
+import com.realteeth.mockworker.client.MockWorkerException;
+import com.realteeth.mockworker.client.MockWorkerProperties;
+import com.realteeth.mockworker.client.WorkerJobSnapshot;
+import com.realteeth.mockworker.client.WorkerJobStatus;
+import com.realteeth.mockworker.domain.ImageJob;
+import com.realteeth.mockworker.domain.ImageJobRepository;
+import com.realteeth.mockworker.domain.JobStatus;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
+
+/**
+ * Polls the Mock Worker for IN_PROGRESS jobs.
+ *
+ * Deadline: if a job has been IN_PROGRESS longer than {@code poll.deadline}, we mark
+ * it FAILED so that stuck worker jobs don't hang forever. The deadline is evaluated
+ * from {@code updatedAt}, which is refreshed on every transition, so a job that the
+ * worker is still actively reporting on won't be killed.
+ *
+ * Transient poll failures extend {@code nextAttemptAt} using exponential backoff.
+ * Permanent failures (4xx other than 429) mark the job FAILED immediately.
+ */
+@Component
+@Slf4j
+public class JobPoller {
+
+    private static final int BATCH_SIZE = 20;
+
+    private final ImageJobRepository repository;
+    private final MockWorkerClient client;
+    private final MockWorkerProperties props;
+    private final TransactionTemplate tx;
+    private final Clock clock;
+
+    public JobPoller(
+            ImageJobRepository repository,
+            MockWorkerClient client,
+            MockWorkerProperties props,
+            TransactionTemplate tx,
+            Clock clock) {
+        this.repository = repository;
+        this.client = client;
+        this.props = props;
+        this.tx = tx;
+        this.clock = clock;
+    }
+
+    @Scheduled(fixedDelayString = "${mock-worker.poll.scheduler-delay-ms:1000}")
+    public void runOnce() {
+        List<String> dueIds = tx.execute(status ->
+                repository.findDueByStatus(JobStatus.IN_PROGRESS, Instant.now(clock), PageRequest.of(0, BATCH_SIZE))
+                        .stream().map(ImageJob::getId).toList());
+        if (dueIds == null || dueIds.isEmpty()) return;
+
+        for (String id : dueIds) {
+            try {
+                pollOne(id);
+            } catch (Exception e) {
+                log.warn("poll loop caught unexpected error for job={}", id, e);
+            }
+        }
+    }
+
+    private void pollOne(String id) {
+        ImageJob job = repository.findById(id).orElse(null);
+        if (job == null || job.getStatus() != JobStatus.IN_PROGRESS) return;
+
+        if (job.getWorkerJobId() == null) {
+            log.error("job={} is IN_PROGRESS without workerJobId — invariant violation", id);
+            return;
+        }
+
+        // Deadline check — happens before external call so we don't waste work on dead jobs.
+        Instant now = Instant.now(clock);
+        if (props.poll().deadline() != null
+                && job.getUpdatedAt().plus(props.poll().deadline()).isBefore(now)) {
+            tx.executeWithoutResult(status -> {
+                ImageJob fresh = repository.findById(id).orElse(null);
+                if (fresh == null || fresh.getStatus() != JobStatus.IN_PROGRESS) return;
+                fresh.markFailed("poll deadline exceeded", Instant.now(clock));
+                repository.save(fresh);
+            });
+            return;
+        }
+
+        WorkerJobSnapshot snapshot;
+        try {
+            snapshot = client.fetch(job.getWorkerJobId());
+        } catch (MockWorkerException e) {
+            handlePollFailure(id, e);
+            return;
+        }
+
+        tx.executeWithoutResult(status -> {
+            ImageJob fresh = repository.findById(id).orElse(null);
+            if (fresh == null || fresh.getStatus() != JobStatus.IN_PROGRESS) return;
+            Instant t = Instant.now(clock);
+            try {
+                switch (snapshot.status()) {
+                    case COMPLETED -> fresh.markCompleted(snapshot.result(), t);
+                    case FAILED -> fresh.markFailed("worker reported FAILED", t);
+                    case PROCESSING -> {
+                        Duration backoff = BackoffCalculator.next(
+                                props.poll().initialInterval(),
+                                props.poll().maxInterval(),
+                                fresh.getAttemptCount() + 1);
+                        fresh.recordTransientFailure(t.plus(backoff), "still processing", t);
+                    }
+                }
+                repository.save(fresh);
+            } catch (ObjectOptimisticLockingFailureException race) {
+                log.info("poll concurrent update for job={}, will retry next tick", id);
+            }
+        });
+    }
+
+    private void handlePollFailure(String id, MockWorkerException e) {
+        tx.executeWithoutResult(status -> {
+            ImageJob fresh = repository.findById(id).orElse(null);
+            if (fresh == null || fresh.getStatus() != JobStatus.IN_PROGRESS) return;
+            Instant now = Instant.now(clock);
+
+            if (!e.isTransient()) {
+                fresh.markFailed("poll permanent failure: " + e.getMessage(), now);
+                repository.save(fresh);
+                return;
+            }
+            Duration backoff = BackoffCalculator.next(
+                    props.poll().initialInterval(),
+                    props.poll().maxInterval(),
+                    fresh.getAttemptCount() + 1);
+            fresh.recordTransientFailure(now.plus(backoff), e.getMessage(), now);
+            repository.save(fresh);
+        });
+    }
+}

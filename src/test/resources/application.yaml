@@ -1,0 +1,31 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:mockworker;MODE=MySQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+    open-in-view: false
+
+mock-worker:
+  base-url: http://localhost:0/mock
+  candidate-name: test
+  email: test@example.com
+  api-key: test-key
+  connect-timeout: 500ms
+  read-timeout: 1s
+  submit:
+    max-attempts: 3
+    initial-backoff: 100ms
+    max-backoff: 1s
+    scheduler-delay-ms: 60000
+  poll:
+    initial-interval: 100ms
+    max-interval: 1s
+    deadline: 1m
+    scheduler-delay-ms: 60000
