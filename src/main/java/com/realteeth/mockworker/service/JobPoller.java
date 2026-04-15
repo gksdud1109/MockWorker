@@ -4,7 +4,6 @@ import com.realteeth.mockworker.client.MockWorkerClient;
 import com.realteeth.mockworker.client.MockWorkerException;
 import com.realteeth.mockworker.client.MockWorkerProperties;
 import com.realteeth.mockworker.client.WorkerJobSnapshot;
-import com.realteeth.mockworker.client.WorkerJobStatus;
 import com.realteeth.mockworker.domain.ImageJob;
 import com.realteeth.mockworker.domain.ImageJobRepository;
 import com.realteeth.mockworker.domain.JobStatus;
@@ -39,6 +38,7 @@ public class JobPoller {
     private final ImageJobRepository repository;
     private final MockWorkerClient client;
     private final MockWorkerProperties props;
+    private final RetryPolicy retryPolicy;
     private final TransactionTemplate tx;
     private final Clock clock;
 
@@ -51,6 +51,12 @@ public class JobPoller {
         this.repository = repository;
         this.client = client;
         this.props = props;
+        // poll has no maxAttempts (deadline-based expiry instead)
+        this.retryPolicy = new RetryPolicy(
+                props.poll().initialInterval(),
+                props.poll().maxInterval(),
+                null,
+                "poll");
         this.tx = tx;
         this.clock = clock;
     }
@@ -89,6 +95,7 @@ public class JobPoller {
                 if (fresh == null || fresh.getStatus() != JobStatus.IN_PROGRESS) return;
                 fresh.markFailed("poll deadline exceeded", Instant.now(clock));
                 repository.save(fresh);
+                log.warn("job={} poll deadline exceeded, marking FAILED", id);
             });
             return;
         }
@@ -97,7 +104,7 @@ public class JobPoller {
         try {
             snapshot = client.fetch(job.getWorkerJobId());
         } catch (MockWorkerException e) {
-            handlePollFailure(id, e);
+            applyRetry(id, e);
             return;
         }
 
@@ -115,7 +122,7 @@ public class JobPoller {
                         Duration backoff = BackoffCalculator.next(
                                 props.poll().initialInterval(),
                                 props.poll().maxInterval(),
-                                fresh.getAttemptCount() + 1);
+                                fresh.getAttemptCount());
                         fresh.recordProgress(t.plus(backoff), t);
                     }
                 }
@@ -126,23 +133,15 @@ public class JobPoller {
         }
     }
 
-    private void handlePollFailure(String id, MockWorkerException e) {
+    private void applyRetry(String id, MockWorkerException e) {
         tx.executeWithoutResult(status -> {
             ImageJob fresh = repository.findById(id).orElse(null);
             if (fresh == null || fresh.getStatus() != JobStatus.IN_PROGRESS) return;
-            Instant now = Instant.now(clock);
-
-            if (!e.isTransient()) {
-                fresh.markFailed("poll permanent failure: " + e.getMessage(), now);
-                repository.save(fresh);
-                return;
-            }
-            Duration backoff = BackoffCalculator.next(
-                    props.poll().initialInterval(),
-                    props.poll().maxInterval(),
-                    fresh.getAttemptCount() + 1);
-            fresh.recordTransientFailure(now.plus(backoff), e.getMessage(), now);
+            boolean failed = retryPolicy.apply(fresh, e, Instant.now(clock));
             repository.save(fresh);
+            if (failed) {
+                log.warn("job={} poll failed permanently: {}", id, fresh.getFailureReason());
+            }
         });
     }
 }

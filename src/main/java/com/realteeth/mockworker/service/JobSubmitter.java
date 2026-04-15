@@ -9,7 +9,6 @@ import com.realteeth.mockworker.domain.ImageJob;
 import com.realteeth.mockworker.domain.ImageJobRepository;
 import com.realteeth.mockworker.domain.JobStatus;
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
@@ -43,7 +42,7 @@ public class JobSubmitter {
 
     private final ImageJobRepository repository;
     private final MockWorkerClient client;
-    private final MockWorkerProperties props;
+    private final RetryPolicy retryPolicy;
     private final TransactionTemplate tx;
     private final Clock clock;
 
@@ -55,7 +54,11 @@ public class JobSubmitter {
             Clock clock) {
         this.repository = repository;
         this.client = client;
-        this.props = props;
+        this.retryPolicy = new RetryPolicy(
+                props.submit().initialBackoff(),
+                props.submit().maxBackoff(),
+                props.submit().maxAttempts(),
+                "submit");
         this.tx = tx;
         this.clock = clock;
     }
@@ -85,7 +88,7 @@ public class JobSubmitter {
         try {
             snapshot = client.submit(job.getImageUrl());
         } catch (MockWorkerException e) {
-            handleSubmitFailure(id, e);
+            applyRetry(id, e);
             return;
         }
 
@@ -110,29 +113,15 @@ public class JobSubmitter {
         }
     }
 
-    private void handleSubmitFailure(String id, MockWorkerException e) {
+    private void applyRetry(String id, MockWorkerException e) {
         tx.executeWithoutResult(status -> {
             ImageJob fresh = repository.findById(id).orElse(null);
             if (fresh == null || fresh.getStatus() != JobStatus.PENDING) return;
-            Instant now = Instant.now(clock);
-
-            if (!e.isTransient()) {
-                fresh.markFailed("submit permanent failure: " + e.getMessage(), now);
-                repository.save(fresh);
-                return;
-            }
-            int nextAttempt = fresh.getAttemptCount() + 1;
-            if (nextAttempt >= props.submit().maxAttempts()) {
-                fresh.markFailed("submit max attempts exceeded: " + e.getMessage(), now);
-                repository.save(fresh);
-                return;
-            }
-            Duration backoff = BackoffCalculator.next(
-                    props.submit().initialBackoff(),
-                    props.submit().maxBackoff(),
-                    nextAttempt);
-            fresh.recordTransientFailure(now.plus(backoff), e.getMessage(), now);
+            boolean failed = retryPolicy.apply(fresh, e, Instant.now(clock));
             repository.save(fresh);
+            if (failed) {
+                log.warn("job={} submit failed permanently: {}", id, fresh.getFailureReason());
+            }
         });
     }
 }
