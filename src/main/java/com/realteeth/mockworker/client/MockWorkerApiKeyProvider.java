@@ -7,14 +7,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 /**
- * Fetches and caches the API key issued by the Mock Worker.
+ * Mock Worker 가 발급한 API 키를 캐시.
  *
- * The key is loaded lazily on first use and cached in-memory. Callers can request
- * a forced refresh via {@link #refresh()} when they see a 401 from the worker.
+ * 스레드 안전 계약:
+ *   - {@link #get()}: AtomicReference 로 빠른 경로 조회; 없으면 synchronized 발급 호출.
+ *   - {@link #refresh()}: 캐시 상태와 무관하게 항상 새 키 발급.
+ *     {@link #issueAndCache()} 와 동일한 락을 사용해 clear → re-fetch 사이의 경쟁 조건 방지.
  *
- * If a static key is configured via {@code mock-worker.api-key}, the provider
- * short-circuits and never calls issue-key. This is what the container integration
- * path uses so tests/reviewers don't need network on startup.
+ * {@code mock-worker.api-key} 가 설정된 경우 원격 발급을 생략한다.
  */
 @Component
 @Slf4j
@@ -38,14 +38,27 @@ public class MockWorkerApiKeyProvider {
         return issueAndCache();
     }
 
-    public String refresh() {
+    /**
+     * 새 키를 강제 발급하고 캐시를 갱신.
+     * {@link #issueAndCache()} 와 동일한 락을 사용해 clear → re-fetch 사이에 다른 스레드가 끼어드는 것을 방지.
+     */
+    public synchronized String refresh() {
         cached.set(null);
-        return issueAndCache();
+        String key = fetchFromRemote();
+        cached.set(key);
+        return key;
     }
 
     private synchronized String issueAndCache() {
+        // 더블 체크: 락 대기 중 다른 스레드가 이미 발급했을 수 있음.
         String existing = cached.get();
         if (existing != null) return existing;
+        String key = fetchFromRemote();
+        cached.set(key);
+        return key;
+    }
+
+    private String fetchFromRemote() {
         log.info("issuing mock-worker api key for candidate={}", props.candidateName());
         try {
             @SuppressWarnings("unchecked")
@@ -60,9 +73,7 @@ public class MockWorkerApiKeyProvider {
             if (body == null || body.get("apiKey") == null) {
                 throw new MockWorkerException("issue-key returned empty body", false);
             }
-            String key = body.get("apiKey").toString();
-            cached.set(key);
-            return key;
+            return body.get("apiKey").toString();
         } catch (MockWorkerException e) {
             throw e;
         } catch (Exception e) {

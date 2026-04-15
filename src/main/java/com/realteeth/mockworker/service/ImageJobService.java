@@ -16,13 +16,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Transactional entry point for job accept / lookup / list.
+ * 작업 등록/조회/목록의 트랜잭션 진입점.
  *
- * Rules this service enforces:
- *   - accept is idempotent: same {@code idempotencyKey} + same payload → return existing job
- *   - idempotency-key reuse with a different payload is a 409, not a silent merge
- *   - NO external Mock Worker calls happen inside this service: the accept TX only
- *     inserts a PENDING row. The background {@code JobSubmitter} handles the external call.
+ * 이 서비스가 보장하는 규칙:
+ *   - accept 는 멱등성 보장: 동일 {@code idempotencyKey} + 동일 페이로드 → 기존 작업 반환
+ *   - 동일 키로 다른 페이로드가 오면 409 반환 (조용한 병합 없음)
+ *   - 외부 Mock Worker 호출은 이 서비스에서 발생하지 않음: accept 는 PENDING 행만 삽입하고,
+ *     실제 외부 호출은 백그라운드 {@code JobSubmitter} 가 담당
  */
 @Service
 @Slf4j
@@ -41,7 +41,7 @@ public class ImageJobService {
         String fingerprint = fingerprint(imageUrl);
         Instant now = Instant.now(clock);
 
-        // Fast path: lookup existing
+        // 기존 작업 조회 (빠른 경로)
         var existing = repository.findByClientRequestKey(idempotencyKey);
         if (existing.isPresent()) {
             return verifyFingerprintOrThrow(existing.get(), fingerprint);
@@ -51,7 +51,7 @@ public class ImageJobService {
         try {
             return repository.saveAndFlush(job);
         } catch (DataIntegrityViolationException race) {
-            // Concurrent insert with same idempotency key — resolve by reading the winner
+            // 동일 멱등성 키로 동시 삽입 발생 시 — 승자 행을 읽어서 반환
             return repository.findByClientRequestKey(idempotencyKey)
                     .map(existingJob -> verifyFingerprintOrThrow(existingJob, fingerprint))
                     .orElseThrow(() -> race);
