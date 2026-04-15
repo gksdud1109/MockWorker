@@ -90,11 +90,13 @@ public class JobSubmitter {
         }
 
         // Worker may respond synchronously with COMPLETED/FAILED for small inputs.
-        tx.executeWithoutResult(status -> {
-            ImageJob fresh = repository.findById(id).orElse(null);
-            if (fresh == null || fresh.getStatus() != JobStatus.PENDING) return;
-            Instant now = Instant.now(clock);
-            try {
+        // OptimisticLockingFailureException is thrown by Hibernate at commit time (after the
+        // lambda returns), so the catch must wrap the executeWithoutResult call, not its body.
+        try {
+            tx.executeWithoutResult(status -> {
+                ImageJob fresh = repository.findById(id).orElse(null);
+                if (fresh == null || fresh.getStatus() != JobStatus.PENDING) return;
+                Instant now = Instant.now(clock);
                 fresh.markSubmitted(snapshot.jobId(), now);
                 if (snapshot.status() == WorkerJobStatus.COMPLETED) {
                     fresh.markCompleted(snapshot.result(), now);
@@ -102,10 +104,10 @@ public class JobSubmitter {
                     fresh.markFailed("worker reported FAILED at submit", now);
                 }
                 repository.save(fresh);
-            } catch (ObjectOptimisticLockingFailureException race) {
-                log.info("submit concurrent update for job={}, will retry next tick", id);
-            }
-        });
+            });
+        } catch (ObjectOptimisticLockingFailureException race) {
+            log.info("submit concurrent update for job={}, will retry next tick", id);
+        }
     }
 
     private void handleSubmitFailure(String id, MockWorkerException e) {

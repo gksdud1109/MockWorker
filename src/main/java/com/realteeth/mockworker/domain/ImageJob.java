@@ -130,6 +130,7 @@ public class ImageJob {
 
     /**
      * Record a transient failure and schedule the next attempt. Does not change status.
+     * Sets {@code failureReason} so operators can see what the last error was.
      * The caller has already decided that the error is retryable.
      */
     public void recordTransientFailure(Instant nextAttemptAt, String reason, Instant now) {
@@ -139,6 +140,24 @@ public class ImageJob {
         this.attemptCount++;
         this.nextAttemptAt = nextAttemptAt;
         this.failureReason = truncate(reason, 1024);
+        this.updatedAt = now;
+    }
+
+    /**
+     * Advance the next-poll time after a PROCESSING response from the worker.
+     * Unlike {@link #recordTransientFailure}, this clears {@code failureReason} because
+     * the worker is making normal progress — this is not an error state.
+     */
+    public void recordProgress(Instant nextPollAt, Instant now) {
+        if (status.isTerminal()) {
+            throw new InvalidJobStateException("cannot advance poll on terminal state " + status);
+        }
+        if (status != JobStatus.IN_PROGRESS) {
+            throw new InvalidJobStateException("recordProgress requires IN_PROGRESS, got " + status);
+        }
+        this.attemptCount++;
+        this.nextAttemptAt = nextPollAt;
+        this.failureReason = null;
         this.updatedAt = now;
     }
 

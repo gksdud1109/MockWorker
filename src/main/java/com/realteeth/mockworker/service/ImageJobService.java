@@ -76,7 +76,7 @@ public class ImageJobService {
         return existing;
     }
 
-    static String fingerprint(String imageUrl) {
+    public static String fingerprint(String imageUrl) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(("v1|" + imageUrl).getBytes(StandardCharsets.UTF_8));
