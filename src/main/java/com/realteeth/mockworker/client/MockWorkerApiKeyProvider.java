@@ -9,12 +9,14 @@ import org.springframework.web.client.RestClient;
 /**
  * Fetches and caches the API key issued by the Mock Worker.
  *
- * The key is loaded lazily on first use and cached in-memory. Callers can request
- * a forced refresh via {@link #refresh()} when they see a 401 from the worker.
+ * Threading contract:
+ *   - {@link #get()}: fast path via AtomicReference; falls back to synchronized issue-key call.
+ *   - {@link #refresh()}: always issues a new key regardless of cache state.
+ *     Runs fully inside the same synchronized block as {@link #issueAndCache()} to prevent
+ *     a concurrent {@code get()} from re-caching a stale key between the clear and re-fetch.
  *
  * If a static key is configured via {@code mock-worker.api-key}, the provider
- * short-circuits and never calls issue-key. This is what the container integration
- * path uses so tests/reviewers don't need network on startup.
+ * short-circuits and never calls issue-key.
  */
 @Component
 @Slf4j
@@ -38,14 +40,28 @@ public class MockWorkerApiKeyProvider {
         return issueAndCache();
     }
 
-    public String refresh() {
+    /**
+     * Force-fetch a new key and update the cache.
+     * Runs under the same lock as {@link #issueAndCache()} so that no concurrent thread
+     * can observe the cleared cache and race to fetch before us.
+     */
+    public synchronized String refresh() {
         cached.set(null);
-        return issueAndCache();
+        String key = fetchFromRemote();
+        cached.set(key);
+        return key;
     }
 
     private synchronized String issueAndCache() {
+        // Double-check: another thread may have already fetched while we were waiting for the lock.
         String existing = cached.get();
         if (existing != null) return existing;
+        String key = fetchFromRemote();
+        cached.set(key);
+        return key;
+    }
+
+    private String fetchFromRemote() {
         log.info("issuing mock-worker api key for candidate={}", props.candidateName());
         try {
             @SuppressWarnings("unchecked")
@@ -60,9 +76,7 @@ public class MockWorkerApiKeyProvider {
             if (body == null || body.get("apiKey") == null) {
                 throw new MockWorkerException("issue-key returned empty body", false);
             }
-            String key = body.get("apiKey").toString();
-            cached.set(key);
-            return key;
+            return body.get("apiKey").toString();
         } catch (MockWorkerException e) {
             throw e;
         } catch (Exception e) {
