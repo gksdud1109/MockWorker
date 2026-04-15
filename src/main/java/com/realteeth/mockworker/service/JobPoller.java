@@ -19,15 +19,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Polls the Mock Worker for IN_PROGRESS jobs.
+ * IN_PROGRESS 상태 작업의 진행 상황을 Mock Worker 에 폴링.
  *
- * Deadline: if a job has been IN_PROGRESS longer than {@code poll.deadline}, we mark
- * it FAILED so that stuck worker jobs don't hang forever. The deadline is evaluated
- * from {@code updatedAt}, which is refreshed on every transition, so a job that the
- * worker is still actively reporting on won't be killed.
+ * 데드라인: 작업이 {@code poll.deadline} 을 초과해 IN_PROGRESS 상태이면 FAILED 처리.
+ * 데드라인은 {@code updatedAt} 기준으로 평가되므로 워커가 PROCESSING 을 계속 응답하는
+ * 한 삭제되지 않는다.
  *
- * Transient poll failures extend {@code nextAttemptAt} using exponential backoff.
- * Permanent failures (4xx other than 429) mark the job FAILED immediately.
+ * 일시적 폴링 실패는 지수 백오프로 {@code nextAttemptAt} 을 연장.
+ * 영구 실패(429 제외 4xx)는 즉시 FAILED 처리.
  */
 @Component
 @Slf4j
@@ -51,7 +50,7 @@ public class JobPoller {
         this.repository = repository;
         this.client = client;
         this.props = props;
-        // poll has no maxAttempts (deadline-based expiry instead)
+        // 폴링은 maxAttempts 없음 — 데드라인 기반으로 만료
         this.retryPolicy = new RetryPolicy(
                 props.poll().initialInterval(),
                 props.poll().maxInterval(),
@@ -86,7 +85,7 @@ public class JobPoller {
             return;
         }
 
-        // Deadline check — happens before external call so we don't waste work on dead jobs.
+        // 데드라인 체크 — 외부 호출 전에 수행해 불필요한 작업 방지.
         Instant now = Instant.now(clock);
         if (props.poll().deadline() != null
                 && job.getUpdatedAt().plus(props.poll().deadline()).isBefore(now)) {
@@ -108,8 +107,8 @@ public class JobPoller {
             return;
         }
 
-        // OptimisticLockingFailureException fires at commit time (outside the lambda), so wrap
-        // the executeWithoutResult call — not the lambda body — to catch it correctly.
+        // OptimisticLockingFailureException 은 커밋 시점(람다 반환 후)에 발생하므로
+        // 람다 내부가 아닌 executeWithoutResult 호출 전체를 감싸야 한다.
         try {
             tx.executeWithoutResult(status -> {
                 ImageJob fresh = repository.findById(id).orElse(null);

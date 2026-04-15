@@ -6,24 +6,22 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * Encapsulates "should we retry or fail?" decision and the backoff calculation.
+ * 재시도 여부 결정과 백오프 계산을 캡슐화.
  *
- * This removes the symmetric duplication between JobSubmitter.handleSubmitFailure and
- * JobPoller.handlePollFailure. Both had the same transient/permanent/max-attempts branching;
- * having it in two places means a change to retry strategy must touch two files simultaneously.
+ * JobSubmitter 와 JobPoller 에 중복되어 있던 일시적/영구적/최대시도 분기 로직을 통합.
+ * 재시도 전략 변경 시 한 곳만 수정하면 된다.
  *
- * @param initial     starting backoff duration
- * @param ceiling     maximum backoff duration
- * @param maxAttempts total attempts before giving up (null = unlimited)
- * @param phase       label used in the failure reason string ("submit" or "poll")
+ * @param initial     첫 재시도의 기준 대기 시간
+ * @param ceiling     최대 대기 시간
+ * @param maxAttempts 최대 시도 횟수 (null = 무제한)
+ * @param phase       실패 사유 문자열에 사용할 단계 레이블 ("submit" 또는 "poll")
  */
 public record RetryPolicy(Duration initial, Duration ceiling, Integer maxAttempts, String phase) {
 
     /**
-     * Apply this policy to a job after a worker exception.
-     * Mutates the job in-place (no save). Caller is responsible for persisting.
+     * 워커 예외 발생 후 정책을 작업에 적용. 작업 상태를 직접 변경하며 저장은 호출자 책임.
      *
-     * @return true if the job was marked FAILED (caller may want to log differently)
+     * @return FAILED 로 전이된 경우 true (호출자가 로그 처리를 다르게 할 수 있음)
      */
     public boolean apply(ImageJob job, MockWorkerException e, Instant now) {
         if (!e.isTransient()) {
