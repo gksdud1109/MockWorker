@@ -101,11 +101,13 @@ public class JobPoller {
             return;
         }
 
-        tx.executeWithoutResult(status -> {
-            ImageJob fresh = repository.findById(id).orElse(null);
-            if (fresh == null || fresh.getStatus() != JobStatus.IN_PROGRESS) return;
-            Instant t = Instant.now(clock);
-            try {
+        // OptimisticLockingFailureException fires at commit time (outside the lambda), so wrap
+        // the executeWithoutResult call — not the lambda body — to catch it correctly.
+        try {
+            tx.executeWithoutResult(status -> {
+                ImageJob fresh = repository.findById(id).orElse(null);
+                if (fresh == null || fresh.getStatus() != JobStatus.IN_PROGRESS) return;
+                Instant t = Instant.now(clock);
                 switch (snapshot.status()) {
                     case COMPLETED -> fresh.markCompleted(snapshot.result(), t);
                     case FAILED -> fresh.markFailed("worker reported FAILED", t);
@@ -114,14 +116,14 @@ public class JobPoller {
                                 props.poll().initialInterval(),
                                 props.poll().maxInterval(),
                                 fresh.getAttemptCount() + 1);
-                        fresh.recordTransientFailure(t.plus(backoff), "still processing", t);
+                        fresh.recordProgress(t.plus(backoff), t);
                     }
                 }
                 repository.save(fresh);
-            } catch (ObjectOptimisticLockingFailureException race) {
-                log.info("poll concurrent update for job={}, will retry next tick", id);
-            }
-        });
+            });
+        } catch (ObjectOptimisticLockingFailureException race) {
+            log.info("poll concurrent update for job={}, will retry next tick", id);
+        }
     }
 
     private void handlePollFailure(String id, MockWorkerException e) {

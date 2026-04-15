@@ -11,6 +11,10 @@ import com.realteeth.mockworker.client.WorkerJobStatus;
 import com.realteeth.mockworker.domain.ImageJob;
 import com.realteeth.mockworker.domain.ImageJobRepository;
 import com.realteeth.mockworker.domain.JobStatus;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,9 +32,18 @@ class JobPollerTest {
     @Autowired TransactionTemplate tx;
 
     @MockitoBean MockWorkerClient client;
+    @MockitoBean Clock clock;
 
     @BeforeEach
-    void clean() {
+    void setUp() {
+        repository.deleteAll();
+        // Default: clock returns real current time so existing tests are unaffected
+        when(clock.instant()).thenAnswer(inv -> Instant.now());
+        when(clock.getZone()).thenReturn(ZoneOffset.UTC);
+    }
+
+    @AfterEach
+    void tearDown() {
         repository.deleteAll();
     }
 
@@ -94,5 +107,35 @@ class JobPollerTest {
         ImageJob reloaded = repository.findById(job.getId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(JobStatus.FAILED);
         assertThat(reloaded.getFailureReason()).contains("404 gone");
+    }
+
+    @Test
+    void processing_response_clears_failure_reason_not_sets_it() {
+        // Verify that a normal PROCESSING response does NOT contaminate failureReason
+        ImageJob job = acceptAndSubmit("k-processing", "https://img/a.png", "worker-5");
+        when(client.fetch("worker-5"))
+                .thenReturn(new WorkerJobSnapshot("worker-5", WorkerJobStatus.PROCESSING, null));
+
+        poller.runOnce();
+
+        ImageJob reloaded = repository.findById(job.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(JobStatus.IN_PROGRESS);
+        assertThat(reloaded.getFailureReason()).isNull();
+    }
+
+    @Test
+    void poll_deadline_exceeded_marks_job_failed() {
+        // test config: deadline=1m. Simulate clock 2 minutes in the future so deadline is exceeded.
+        ImageJob job = acceptAndSubmit("k-deadline", "https://img/a.png", "worker-6");
+
+        // Advance clock 2 minutes: updatedAt(~now) + 1m deadline < now+2m → expired
+        Instant future = Instant.now().plusSeconds(120);
+        when(clock.instant()).thenReturn(future);
+
+        poller.runOnce();
+
+        ImageJob reloaded = repository.findById(job.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(JobStatus.FAILED);
+        assertThat(reloaded.getFailureReason()).contains("deadline exceeded");
     }
 }

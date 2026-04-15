@@ -71,4 +71,26 @@ class JobSubmitterTest {
         assertThat(reloaded.getStatus()).isEqualTo(JobStatus.FAILED);
         assertThat(reloaded.getFailureReason()).contains("400 bad request");
     }
+
+    @Test
+    void submit_max_attempts_exceeded_transitions_to_failed() {
+        // test config: max-attempts=3. At attemptCount=2, one more transient → FAILED.
+        when(client.submit(any()))
+                .thenThrow(new MockWorkerException("503 upstream", true));
+
+        ImageJob job = service.accept("k-maxattempts", "https://img/a.png");
+
+        // Pre-seed two prior transient failures (attemptCount=2, nextAttemptAt=EPOCH so due immediately)
+        ImageJob loaded = repository.findById(job.getId()).orElseThrow();
+        loaded.recordTransientFailure(java.time.Instant.EPOCH, "prior-1", java.time.Instant.now());
+        loaded.recordTransientFailure(java.time.Instant.EPOCH, "prior-2", java.time.Instant.now());
+        repository.save(loaded);
+
+        // Now: nextAttempt = 2+1 = 3 >= maxAttempts(3) → should become FAILED
+        submitter.runOnce();
+
+        ImageJob reloaded = repository.findById(job.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(JobStatus.FAILED);
+        assertThat(reloaded.getFailureReason()).contains("max attempts exceeded");
+    }
 }

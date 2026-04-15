@@ -1,5 +1,7 @@
 package com.realteeth.mockworker.web;
 
+import static com.realteeth.mockworker.service.ImageJobService.fingerprint;
+
 import com.realteeth.mockworker.domain.ImageJob;
 import com.realteeth.mockworker.service.ImageJobService;
 import jakarta.validation.Valid;
@@ -34,7 +36,7 @@ public class JobController {
         String key = (idempotencyKey == null || idempotencyKey.isBlank())
                 // fallback: content-derived key. Two identical payloads will be deduped.
                 // This is a safety net — clients in production SHOULD pass an explicit key.
-                ? "auto-" + ImageJobServiceFingerprint.of(body.imageUrl())
+                ? "auto-" + fingerprint(body.imageUrl())
                 : idempotencyKey;
         ImageJob job = service.accept(key, body.imageUrl());
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(JobResponse.from(job));
