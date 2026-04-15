@@ -1,7 +1,10 @@
 HELP.md
 .gradle
 build/
-!gradle/wrapper/gradle-wrapper.jar
+gradle/wrapper/gradle-wrapper.jar
+gradlew.bat
+.gitattributes
+.DS_Store
 !**/src/main/**/build/
 !**/src/test/**/build/
 
