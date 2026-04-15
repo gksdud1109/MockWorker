@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: mockworker
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/mockworker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}
+    username: ${DB_USERNAME:mockworker}
+    password: ${DB_PASSWORD:mockworker}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+    open-in-view: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+mock-worker:
+  base-url: ${MOCK_WORKER_BASE_URL:https://dev.realteeth.ai/mock}
+  candidate-name: ${MOCK_WORKER_CANDIDATE_NAME:candidate}
+  email: ${MOCK_WORKER_EMAIL:candidate@example.com}
+  # If set, skip /auth/issue-key and use this key directly. Useful for local tests.
+  api-key: ${MOCK_WORKER_API_KEY:}
+  connect-timeout: 2s
+  read-timeout: 5s
+  submit:
+    max-attempts: 5
+    initial-backoff: 1s
+    max-backoff: 30s
+    scheduler-delay-ms: 1000
+  poll:
+    initial-interval: 2s
+    max-interval: 15s
+    deadline: 10m
+    scheduler-delay-ms: 1000
