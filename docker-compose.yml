@@ -1,0 +1,37 @@
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: mockworker
+      MYSQL_USER: mockworker
+      MYSQL_PASSWORD: mockworker
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  app:
+    build: .
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/mockworker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+      DB_USERNAME: mockworker
+      DB_PASSWORD: mockworker
+      MOCK_WORKER_BASE_URL: https://dev.realteeth.ai/mock
+      # Set either MOCK_WORKER_API_KEY (skip issue-key) or candidate-name/email to issue on startup
+      MOCK_WORKER_CANDIDATE_NAME: ${MOCK_WORKER_CANDIDATE_NAME:-candidate}
+      MOCK_WORKER_EMAIL: ${MOCK_WORKER_EMAIL:-candidate@example.com}
+      MOCK_WORKER_API_KEY: ${MOCK_WORKER_API_KEY:-}
+    ports:
+      - "8080:8080"
+
+volumes:
+  mysql_data:
