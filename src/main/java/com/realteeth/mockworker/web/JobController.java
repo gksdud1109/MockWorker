@@ -34,8 +34,8 @@ public class JobController {
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody CreateJobRequest body) {
         String key = (idempotencyKey == null || idempotencyKey.isBlank())
-                // fallback: content-derived key. Two identical payloads will be deduped.
-                // This is a safety net — clients in production SHOULD pass an explicit key.
+                // 대체 키: 콘텐츠 기반 자동 생성. 동일 페이로드는 중복 제거됨.
+                // 운영 환경에서는 클라이언트가 명시적 키를 전달해야 함.
                 ? "auto-" + fingerprint(body.imageUrl())
                 : idempotencyKey;
         ImageJob job = service.accept(key, body.imageUrl());

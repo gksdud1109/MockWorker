@@ -7,16 +7,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 /**
- * Fetches and caches the API key issued by the Mock Worker.
+ * Mock Worker 가 발급한 API 키를 캐시.
  *
- * Threading contract:
- *   - {@link #get()}: fast path via AtomicReference; falls back to synchronized issue-key call.
- *   - {@link #refresh()}: always issues a new key regardless of cache state.
- *     Runs fully inside the same synchronized block as {@link #issueAndCache()} to prevent
- *     a concurrent {@code get()} from re-caching a stale key between the clear and re-fetch.
+ * 스레드 안전 계약:
+ *   - {@link #get()}: AtomicReference 로 빠른 경로 조회; 없으면 synchronized 발급 호출.
+ *   - {@link #refresh()}: 캐시 상태와 무관하게 항상 새 키 발급.
+ *     {@link #issueAndCache()} 와 동일한 락을 사용해 clear → re-fetch 사이의 경쟁 조건 방지.
  *
- * If a static key is configured via {@code mock-worker.api-key}, the provider
- * short-circuits and never calls issue-key.
+ * {@code mock-worker.api-key} 가 설정된 경우 원격 발급을 생략한다.
  */
 @Component
 @Slf4j
@@ -41,9 +39,8 @@ public class MockWorkerApiKeyProvider {
     }
 
     /**
-     * Force-fetch a new key and update the cache.
-     * Runs under the same lock as {@link #issueAndCache()} so that no concurrent thread
-     * can observe the cleared cache and race to fetch before us.
+     * 새 키를 강제 발급하고 캐시를 갱신.
+     * {@link #issueAndCache()} 와 동일한 락을 사용해 clear → re-fetch 사이에 다른 스레드가 끼어드는 것을 방지.
      */
     public synchronized String refresh() {
         cached.set(null);
@@ -53,7 +50,7 @@ public class MockWorkerApiKeyProvider {
     }
 
     private synchronized String issueAndCache() {
-        // Double-check: another thread may have already fetched while we were waiting for the lock.
+        // 더블 체크: 락 대기 중 다른 스레드가 이미 발급했을 수 있음.
         String existing = cached.get();
         if (existing != null) return existing;
         String key = fetchFromRemote();

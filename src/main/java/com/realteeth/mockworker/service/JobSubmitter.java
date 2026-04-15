@@ -19,20 +19,16 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Scheduled background worker that takes PENDING jobs and submits them to the Mock Worker.
+ * PENDING 작업을 Mock Worker 에 제출하는 스케줄러.
  *
- * Transaction boundary: the external HTTP call is made OUTSIDE any DB transaction.
- * We open a short TX only to persist the result (or the retry schedule). This keeps
- * DB connections free while the worker is slow.
+ * 트랜잭션 경계: 외부 HTTP 호출은 DB 트랜잭션 밖에서 수행.
+ * 결과 저장 시에만 짧은 트랜잭션을 열어 워커 응답 대기 중 커넥션을 점유하지 않는다.
  *
- * Concurrency: jobs are guarded by JPA @Version. If another instance (or the poller)
- * updated the same row, we fail the save with OptimisticLock and just move on — the
- * next tick will find the row again.
+ * 동시성: @Version 낙관적 락으로 행을 보호. 다른 인스턴스나 폴러가 먼저 수정한 경우
+ * OptimisticLock 으로 저장 실패 → 다음 틱에서 재시도.
  *
- * On submit crash after the worker received the request but before we persisted its
- * jobId: the row stays in PENDING and will be submitted again → duplicate worker job.
- * This is the at-least-once boundary documented in the README. Mock Worker has no
- * idempotency key so we cannot structurally prevent this.
+ * 워커가 요청을 수신했지만 jobId 저장 전에 크래시가 발생하면 행이 PENDING 으로 남아
+ * 재제출된다 (중복 워커 작업 가능). Mock Worker 에 멱등성 키가 없어 구조적으로 방지 불가.
  */
 @Component
 @Slf4j
@@ -80,7 +76,7 @@ public class JobSubmitter {
     }
 
     private void submitOne(String id) {
-        // Re-read outside lock so we have a fresh snapshot; the save below is @Version-guarded.
+        // 락 밖에서 재조회해 최신 상태를 가져옴; 저장은 @Version 으로 보호.
         ImageJob job = repository.findById(id).orElse(null);
         if (job == null || job.getStatus() != JobStatus.PENDING) return;
 
@@ -92,9 +88,9 @@ public class JobSubmitter {
             return;
         }
 
-        // Worker may respond synchronously with COMPLETED/FAILED for small inputs.
-        // OptimisticLockingFailureException is thrown by Hibernate at commit time (after the
-        // lambda returns), so the catch must wrap the executeWithoutResult call, not its body.
+        // 워커가 작은 입력에 대해 동기적으로 COMPLETED/FAILED 를 응답할 수 있음.
+        // OptimisticLockingFailureException 은 커밋 시점(람다 반환 후)에 발생하므로
+        // 람다 내부가 아닌 executeWithoutResult 호출 전체를 감싸야 한다.
         try {
             tx.executeWithoutResult(status -> {
                 ImageJob fresh = repository.findById(id).orElse(null);
