@@ -15,13 +15,13 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 /**
- * Aggregate root for an image processing job.
+ * 이미지 처리 작업의 애그리거트 루트.
  *
- * Invariants enforced here (never let a service reach in and flip the enum):
- *   - status transitions must follow {@link JobStatus#canTransitionTo(JobStatus)}
- *   - terminal states (COMPLETED/FAILED) are frozen
- *   - result is only set when moving to COMPLETED
- *   - failureReason is only set when moving to FAILED
+ * 모든 상태 전이는 이 클래스 내부에서만 수행된다:
+ *   - 상태 전이는 {@link JobStatus#canTransitionTo(JobStatus)} 를 따른다
+ *   - 종료 상태(COMPLETED/FAILED)는 변경 불가
+ *   - result 는 COMPLETED 전이 시에만 설정
+ *   - failureReason 은 FAILED 전이 시에만 설정
  */
 @Entity
 @Table(
@@ -40,8 +40,8 @@ public class ImageJob {
     private String id;
 
     /**
-     * Client-supplied idempotency key. Unique. Same key + same image returns the
-     * same job; same key + different image is rejected at the service layer.
+     * 클라이언트가 제공하는 멱등성 키. 고유값.
+     * 동일 키 + 동일 이미지 → 기존 작업 반환. 동일 키 + 다른 이미지 → 서비스 계층에서 409 반환.
      */
     @Column(name = "client_request_key", length = 128, nullable = false, updatable = false)
     private String clientRequestKey;
@@ -50,8 +50,7 @@ public class ImageJob {
     private String imageUrl;
 
     /**
-     * Stable hash of the request payload. Used to detect idempotency-key reuse with a
-     * different payload (which we treat as a client bug, not a retry).
+     * 요청 페이로드의 해시값. 동일 멱등성 키로 다른 페이로드가 들어온 경우를 감지하는 데 사용.
      */
     @Column(name = "request_fingerprint", length = 64, nullable = false, updatable = false)
     private String requestFingerprint;
@@ -60,7 +59,7 @@ public class ImageJob {
     @Column(name = "status", length = 20, nullable = false)
     private JobStatus status;
 
-    /** The jobId returned by the Mock Worker. Null until we have successfully submitted. */
+    /** Mock Worker가 반환한 작업 ID. 제출 성공 전까지 null. */
     @Column(name = "worker_job_id", length = 128)
     private String workerJobId;
 
@@ -70,11 +69,11 @@ public class ImageJob {
     @Column(name = "failure_reason", length = 1024)
     private String failureReason;
 
-    /** Retry counter across submit/poll attempts. Used for backoff + dead-lettering. */
+    /** 제출/폴링 시도 횟수. 백오프 계산과 최대 재시도 판단에 사용. */
     @Column(name = "attempt_count", nullable = false)
     private int attemptCount;
 
-    /** Earliest time at which a background worker may pick this row up again. */
+    /** 백그라운드 워커가 이 행을 다시 처리할 수 있는 가장 이른 시각. */
     @Column(name = "next_attempt_at", nullable = false)
     private Instant nextAttemptAt;
 
@@ -109,7 +108,7 @@ public class ImageJob {
         }
         this.status = JobStatus.IN_PROGRESS;
         this.workerJobId = workerJobId;
-        this.attemptCount = 0; // reset for the polling phase
+        this.attemptCount = 0; // 폴링 단계 진입 시 재시도 카운터 초기화
         this.nextAttemptAt = now;
         this.updatedAt = now;
     }
@@ -129,9 +128,8 @@ public class ImageJob {
     }
 
     /**
-     * Record a transient failure and schedule the next attempt. Does not change status.
-     * Sets {@code failureReason} so operators can see what the last error was.
-     * The caller has already decided that the error is retryable.
+     * 일시적 오류를 기록하고 다음 재시도 시각을 설정. 상태는 변경하지 않는다.
+     * {@code failureReason} 에 마지막 오류 내용을 저장해 운영자가 확인할 수 있게 한다.
      */
     public void recordTransientFailure(Instant nextAttemptAt, String reason, Instant now) {
         if (status.isTerminal()) {
@@ -144,9 +142,9 @@ public class ImageJob {
     }
 
     /**
-     * Advance the next-poll time after a PROCESSING response from the worker.
-     * Unlike {@link #recordTransientFailure}, this clears {@code failureReason} because
-     * the worker is making normal progress — this is not an error state.
+     * 워커가 PROCESSING 을 응답한 경우 다음 폴링 시각을 갱신.
+     * {@link #recordTransientFailure} 와 달리 {@code failureReason} 을 null 로 초기화한다.
+     * 정상 진행 중이므로 오류 상태가 아님.
      */
     public void recordProgress(Instant nextPollAt, Instant now) {
         if (status.isTerminal()) {

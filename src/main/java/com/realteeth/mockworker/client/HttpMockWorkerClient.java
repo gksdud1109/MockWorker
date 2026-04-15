@@ -51,7 +51,7 @@ public class HttpMockWorkerClient implements MockWorkerClient {
         } catch (RestClientResponseException e) {
             HttpStatusCode code = e.getStatusCode();
             if (code.value() == 401) {
-                // key may have expired; refresh once and retry
+                // 키 만료 가능성 — 한 번 갱신 후 재시도
                 log.warn("mock-worker returned 401 on {}, refreshing api key", label);
                 apiKeyProvider.refresh();
                 try {
@@ -62,7 +62,7 @@ public class HttpMockWorkerClient implements MockWorkerClient {
             }
             throw classify(e, label);
         } catch (ResourceAccessException e) {
-            // network/IO/timeout
+            // 네트워크/IO/타임아웃
             throw new MockWorkerException("mock-worker " + label + " network failure", e, true);
         } catch (Exception e) {
             throw new MockWorkerException("mock-worker " + label + " unexpected failure", e, true);
